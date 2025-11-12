@@ -1,0 +1,61 @@
+name: RDP + Tailscale Stop
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for cleanup or stop"
+        required: false
+        default: "Manual stop"
+      revoke_tailscale:
+        description: "If true, log out and revoke all bullet* devices"
+        required: false
+        default: "true"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 🧹 Summary
+        run: |
+          Write-Host "Cleanup reason: ${{ inputs.reason }}"
+          Write-Host "Revoke Tailscale: ${{ inputs.revoke_tailscale }}"
+
+      - name: 🔑 Revoke Tailscale devices
+        if: ${{ inputs.revoke_tailscale == 'true' }}
+        env:
+          TS_API_KEY: ${{ secrets.TS_API_KEY }}
+          TS_TAILNET: ${{ secrets.TS_TAILNET }}
+        run: |
+          try {
+            $auth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$env:TS_API_KEY`:"))
+            $tn = [uri]::EscapeDataString("$env:TS_TAILNET")
+            $url = "https://api.tailscale.com/api/v2/tailnet/$tn/devices"
+            $list = Invoke-RestMethod -Uri $url -Headers @{ Authorization = "Basic $auth" }
+            $count = 0
+            foreach ($d in $list.devices) {
+              if ($d.hostname -match '^bullet[0-9]*$') {
+                Write-Host "Revoking device: $($d.hostname) ($($d.id))"
+                Invoke-RestMethod -Method Delete -Uri "https://api.tailscale.com/api/v2/device/$($d.id)" -Headers @{ Authorization = "Basic $auth" } -ErrorAction SilentlyContinue
+                $count++
+              }
+            }
+            Write-Host "Revoked $count bullet* devices."
+          } catch {
+            Write-Host "Warning: $($_.Exception.Message)"
+          }
+
+      - name: 🧾 Report result
+        run: |
+          Write-Host "Cleanup complete at $(Get-Date -Format 'HH:mm:ss')"
+          Write-Host "Reason: ${{ inputs.reason }}"
+          Write-Host "If you wish to restart, dispatch Workflow X again."
